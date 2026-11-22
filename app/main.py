@@ -74,21 +74,26 @@ def create_app(settings: Settings | None = None, *, redis_client=None, provider_
     async def observe(request: Request, call_next):
         request.state.request_id = str(uuid.uuid4())
         start = time.perf_counter()
-        response = await call_next(request)
-        route = request.scope.get('route')
-        # Never label arbitrary paths, queries, usernames, model names or request IDs.
-        label = route.path if route else 'unmatched'
-        method = request.method if request.method in ('GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS') else 'OTHER'
-        elapsed = time.perf_counter() - start
-        metrics.http_requests.labels(method, label, str(response.status_code)).inc()
-        metrics.http_latency.labels(method, label).observe(elapsed)
-        response.headers['X-Request-ID'] = request.state.request_id
-        response.headers['Cache-Control'] = 'no-store'
-        response.headers['X-Content-Type-Options'] = 'nosniff'
-        logger.info(json.dumps({'event':'request', 'request_id': request.state.request_id,
-                               'method':method, 'route':label, 'status':response.status_code,
-                               'latency_ms':round(elapsed*1000)}))
-        return response
+        status = 500
+        try:
+            response = await call_next(request)
+            status = response.status_code
+            response.headers['X-Request-ID'] = request.state.request_id
+            response.headers['Cache-Control'] = 'no-store'
+            response.headers['X-Content-Type-Options'] = 'nosniff'
+            return response
+        finally:
+            # Observe even unexpected endpoint/dependency failures, then let the
+            # framework propagate them. Never record exception text or inputs.
+            route = request.scope.get('route')
+            label = route.path if route else 'unmatched'
+            method = request.method if request.method in ('GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS') else 'OTHER'
+            elapsed = time.perf_counter() - start
+            metrics.http_requests.labels(method, label, str(status)).inc()
+            metrics.http_latency.labels(method, label).observe(elapsed)
+            logger.info(json.dumps({'event':'request', 'request_id': request.state.request_id,
+                                   'method':method, 'route':label, 'status':status,
+                                   'latency_ms':round(elapsed*1000)}))
 
     def failure(request, status, detail, headers=None):
         return JSONResponse(status_code=status, content={'detail':detail,
@@ -220,7 +225,12 @@ def create_app(settings: Settings | None = None, *, redis_client=None, provider_
                 answer=result['answer'] if settings.store_chat_content else None))
             await session.commit()
         if settings.cache_ttl_seconds and not cached:
-            await redis.set(cache_key, json.dumps(result), ex=settings.cache_ttl_seconds)
+            try:
+                await redis.set(cache_key, json.dumps(result), ex=settings.cache_ttl_seconds)
+            except (RedisError, OSError) as exc:
+                # Paid work and its audit commit are complete. Optional cache
+                # population must not provoke a caller retry or duplicate charge.
+                logger.warning('cache_population_failed error_type=%s', type(exc).__name__)
         return ChatResponse(**result, request_id=request.state.request_id, latency_ms=elapsed, cached=cached)
 
     return application

@@ -6,8 +6,8 @@ Verified locally on **November 22, 2026**. This records observed execution, not 
 
 | Check | Observed result |
 | --- | --- |
-| Python 3.14.9 pytest suite with an actual isolated Redis 6.0.16 service | **28 passed in 8.42 seconds** |
-| Python 3.12.16 pytest suite, matching the Docker Python minor version, with real Redis | **28 passed in 8.39 seconds** |
+| Python 3.14.9 pytest suite with an actual isolated Redis 6.0.16 service | **30 passed in 9.04 seconds** |
+| Python 3.12.16 pytest suite, matching the Docker Python minor version, with real Redis | **30 passed in 8.79 seconds** |
 | HTTP end-to-end harness on both Python versions | All eight check groups passed |
 | `python -m compileall -q app alembic scripts tests tools` | Exit 0 |
 | Development environment `pip check` | No broken requirements |
@@ -28,7 +28,7 @@ The standalone Compose and promtool downloads were SHA-256 checked against their
 - Chat metadata persistence, opt-in raw-content persistence, default content privacy, user-isolated caching and validation.
 - Redis failure, database failures, rate limits, capacity rejection and lease cleanup. A cleanup-outage regression verifies that release errors are sanitized/logged without replacing completed work, and that the lease expires.
 - Transient upstream retry, fallback, permanent upstream rejection, malformed responses, per-attempt timeout and total gateway deadline. Regression tests verify that a stalled primary leaves reserved fallback time and that a connection failure can reach the fallback.
-- Sanitized request logging, token counters and bounded route-label cardinality.
+- Sanitized request logging, token counters and bounded route-label cardinality. Unexpected 500 failures remain visible in counters, latency and structured request events without logging exception text. Optional post-commit cache-population failures preserve successful chat responses and their single audit record.
 - Actual Redis Lua atomic rate limiting, shared concurrency admission/release and crashed-lease expiry. The opt-in tests use unique namespaces and never flush Redis databases.
 
 ### What the separate HTTP harness exercises
