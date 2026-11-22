@@ -1,0 +1,39 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aiqa-migrate
+  namespace: aiqa
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels: {app: aiqa-migrate}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: migrate
+          image: registry.example.com/aiqa-api:REPLACE_WITH_IMMUTABLE_RELEASE
+          command: [python, -m, app.cli, migrate]
+          envFrom:
+            - configMapRef: {name: aiqa-config}
+            - secretRef: {name: aiqa-secrets}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 384Mi}
+          volumeMounts: [{name: tmp, mountPath: /tmp}]
+      volumes:
+        - name: tmp
+          emptyDir: {medium: Memory, sizeLimit: 32Mi}

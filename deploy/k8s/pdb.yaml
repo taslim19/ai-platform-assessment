@@ -1,0 +1,9 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: aiqa-api
+  namespace: aiqa
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app: aiqa-api}

@@ -1,0 +1,47 @@
+groups:
+  - name: aiqa-availability
+    rules:
+      - alert: AIQAScrapeUnavailable
+        expr: up{job="aiqa"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: API metrics scrape is unavailable
+          description: Check API health, network connectivity, and the admin bearer token expiry/refresh process.
+      - alert: AIQANoScrapeTargets
+        expr: absent(up{job="aiqa"})
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: No API DNS scrape targets discovered
+          description: Check Compose DNS discovery and API replica health.
+  - name: aiqa-service
+    rules:
+      - alert: AIQAHighServerErrorRate
+        expr: >-
+          (sum(rate(aiqa_http_requests_total{job="aiqa",status=~"5.."}[5m]))
+          / clamp_min(sum(rate(aiqa_http_requests_total{job="aiqa"}[5m])), 0.001) > 0.05)
+          and (sum(rate(aiqa_http_requests_total{job="aiqa"}[5m])) > 1)
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: More than 5 percent API server errors
+          description: Inspect dependencies and LLM failures; threshold is a starting point, not a measured SLO.
+      - alert: AIQAHighProviderErrorRate
+        expr: >-
+          (sum(rate(aiqa_llm_requests_total{job="aiqa",outcome="error"}[5m]))
+          / clamp_min(sum(rate(aiqa_llm_requests_total{job="aiqa"}[5m])), 0.001) > 0.10)
+          and (sum(rate(aiqa_llm_requests_total{job="aiqa"}[5m])) > 0.1)
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: More than 10 percent upstream attempts failing
+          description: Check provider quota, credentials, timeout and retry costs; these are attempt metrics, not final user outcomes.
+      - alert: AIQAHighChatLatency
+        expr: >-
+          histogram_quantile(0.95, sum by (le) (rate(aiqa_http_request_duration_seconds_bucket{job="aiqa",route="/chat"}[5m]))) > 5
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: Chat p95 latency exceeds 5 seconds
+          description: Baseline threshold requires tuning against workload and provider latency; inspect histogram bucket resolution before adopting an SLO.

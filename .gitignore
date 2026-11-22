@@ -1,0 +1,23 @@
+.venv/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.db
+*.sqlite*
+*.log
+*.pid
+*.bundle
+*.zip
+.runtime/
+secrets/
+.secrets/
+*.pem
+*.key
+# Generated media source intermediates use absolute temporary paths.
+docs/slides/timeline.ffconcat

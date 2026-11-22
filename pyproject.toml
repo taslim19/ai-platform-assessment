@@ -1,0 +1,9 @@
+[project]
+name = "aiqa-platform"
+version = "1.0.0"
+requires-python = ">=3.12"
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["error"]
+markers = ["integration: requires explicit TEST_REDIS_URL"]

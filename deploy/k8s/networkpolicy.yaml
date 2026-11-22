@@ -1,0 +1,66 @@
+# Requires a CNI that enforces NetworkPolicy. Replace documentation CIDRs
+# before applying. Security groups must ALSO allow the cluster's source CIDRs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: aiqa
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-ingress
+  namespace: aiqa
+spec:
+  podSelector:
+    matchLabels: {app: aiqa-api}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: traefik}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: traefik}
+      ports: [{protocol: TCP, port: 8000}]
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: monitoring}
+      ports: [{protocol: TCP, port: 8000}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: app-egress
+  namespace: aiqa
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [aiqa-api, aiqa-migrate]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:
+        - ipBlock: {cidr: 192.0.2.10/32}
+      ports: [{protocol: TCP, port: 5432}]
+    - to:
+        - ipBlock: {cidr: 192.0.2.11/32}
+      ports: [{protocol: TCP, port: 6379}]
+    # Public HTTPS provider IPs change. Standard NetworkPolicy cannot filter FQDN.
+    # Use an audited egress gateway/FQDN-capable CNI to constrain this in production.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]
+      ports: [{protocol: TCP, port: 443}]

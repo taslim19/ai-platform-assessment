@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aiqa-api
+  namespace: aiqa
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  minReadySeconds: 10
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  selector:
+    matchLabels: {app: aiqa-api}
+  template:
+    metadata:
+      labels: {app: aiqa-api}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 70
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app: aiqa-api}
+      containers:
+        - name: api
+          image: registry.example.com/aiqa-api:REPLACE_WITH_IMMUTABLE_RELEASE
+          imagePullPolicy: IfNotPresent
+          command: [uvicorn, 'app.main:app', --host, '0.0.0.0', --port, '8000', --timeout-graceful-shutdown, '55', --no-proxy-headers]
+          ports: [{name: http, containerPort: 8000}]
+          envFrom:
+            - configMapRef: {name: aiqa-config}
+            - secretRef: {name: aiqa-secrets}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 250m, memory: 256Mi}
+            limits: {cpu: '1', memory: 768Mi}
+          startupProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 2
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          lifecycle:
+            preStop:
+              exec:
+                command: [python, -c, 'import time; time.sleep(5)']
+          volumeMounts: [{name: tmp, mountPath: /tmp}]
+      volumes:
+        - name: tmp
+          emptyDir: {medium: Memory, sizeLimit: 64Mi}

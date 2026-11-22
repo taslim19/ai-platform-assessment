@@ -1,0 +1,94 @@
+name: aiqa
+x-api: &api
+  image: aiqa-api:local
+  build: .
+  env_file: .env
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+  cap_drop: [ALL]
+  security_opt: ['no-new-privileges:true']
+  init: true
+  stop_grace_period: 60s
+  networks: [backend]
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_DB: ${POSTGRES_DB:-aiqa}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run scripts/setup_env.py first}
+    volumes: ['postgres-data:/var/lib/postgresql/data']
+    networks: [backend]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Run scripts/setup_env.py first}
+    command: [sh, -ec, 'exec redis-server --requirepass "$${REDIS_PASSWORD}" --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction']
+    volumes: ['redis-data:/data']
+    networks: [backend]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$${REDIS_PASSWORD}" redis-cli ping | grep -q PONG']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  migrate:
+    <<: *api
+    command: [python, -m, app.cli, migrate]
+    restart: 'no'
+    healthcheck: {disable: true}
+    depends_on:
+      postgres: {condition: service_healthy}
+  api:
+    <<: *api
+    restart: unless-stopped
+    expose: ['8000']
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+  nginx:
+    image: nginx:1.28-alpine
+    user: '101:101'
+    entrypoint: [nginx, -g, 'daemon off;']
+    ports: ['127.0.0.1:8080:8080']
+    read_only: true
+    tmpfs: ['/tmp:rw,noexec,nosuid,size=32m']
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    volumes: ['./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro']
+    networks: [backend]
+    depends_on:
+      api: {condition: service_healthy}
+    stop_grace_period: 65s
+    restart: unless-stopped
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: [monitoring]
+    user: '65534:65534'
+    command: ['--config.file=/etc/prometheus/prometheus.yml', '--storage.tsdb.path=/prometheus', '--storage.tsdb.retention.time=7d']
+    ports: ['127.0.0.1:9090:9090']
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./.secrets/metrics:/run/metrics:ro
+      - prometheus-data:/prometheus
+    networks: [backend]
+    depends_on:
+      api: {condition: service_healthy}
+    restart: unless-stopped
+networks:
+  backend: {}
+volumes:
+  postgres-data: {}
+  redis-data: {}
+  prometheus-data: {}
