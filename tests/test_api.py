@@ -23,6 +23,29 @@ async def test_chat_roundtrip_persists_metadata_not_content(api):
         assert record.total_tokens == 5
 
 
+async def test_provider_total_token_metrics_preserve_reasoning_usage_and_exclude_cache(api, monkeypatch):
+    client, app, calls = api
+    provider_calls = []
+
+    async def complete(question):
+        provider_calls.append(question)
+        return {'answer': '42', 'model': 'reasoning-model',
+                'usage': {'prompt_tokens': 26, 'completion_tokens': 2, 'total_tokens': 169}}
+
+    monkeypatch.setattr(app.state.gateway, 'complete', complete)
+    user = await login(client)
+    first = await client.post('/chat', json={'question': 'reasoning test'}, headers=user)
+    second = await client.post('/chat', json={'question': 'reasoning test'}, headers=user)
+    assert first.status_code == second.status_code == 200
+    assert first.json()['usage']['total_tokens'] == second.json()['usage']['total_tokens'] == 169
+    assert second.json()['cached'] is True
+    assert len(provider_calls) == 1
+    metrics = app.state.metrics.tokens
+    assert metrics.labels('prompt_tokens')._value.get() == 26
+    assert metrics.labels('completion_tokens')._value.get() == 2
+    assert metrics.labels('total_tokens')._value.get() == 169
+
+
 async def test_auth_rbac_metrics_and_liveness(api):
     client, app, calls = api
     assert (await client.get('/health/live')).status_code == 200

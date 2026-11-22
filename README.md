@@ -8,7 +8,7 @@ A production-oriented implementation of the **AI/LLM Platform & DevOps Engineer*
 
 ## Scope and status
 
-This is source code and deployment configuration, not a hosted service. No real API keys are bundled. The walkthrough is AI-narrated and explicitly labeled, not the submitter's own voice or a claim of a live deployment. Review it and personalize your explanation before submission. The verification report distinguishes actual local tests from untested Docker/Kubernetes/paid-provider execution. The documented 100–500 RPS design is a capacity discussion, not a benchmark certification.
+This is source code and deployment configuration, not a hosted service. No real API keys are bundled. The walkthrough is AI-narrated and explicitly labeled, not the submitter's own voice or a claim of a live deployment. Review it and personalize your explanation before submission. The verification report distinguishes **executed local Docker/PostgreSQL/Redis/real-Gemini checks** from unexecuted Kubernetes and load tests. The documented 100–500 RPS design is a capacity discussion, not a benchmark certification.
 
 Implemented:
 
@@ -52,6 +52,20 @@ docker compose exec api python -m app.cli create-user --username analyst --role 
 ```
 
 Only use a strong unique password. `BOOTSTRAP_PASSWORD` is available for controlled noninteractive provisioning; inject it through your secret system rather than a literal shell command. No demo admin account is created automatically.
+
+### Gemini configuration used for the full-stack check
+
+Set `LLM_API_KEY` privately in your generated `.env`; the archive never contains the test key. The non-secret settings used on November 22, 2026 were:
+
+```dotenv
+LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+LLM_MODEL=gemini-3.8-flash
+LLM_FALLBACK_MODEL=gemini-3.5-flash
+```
+
+Gemini 3.8 Flash returned provider-side `503 UNAVAILABLE` (high demand) during verification. The bounded primary/fallback path returned an actual answer from 3.5 Flash. The response reports the **actual model used**; this is not evidence of successful 3.8 inference. Availability and account quotas can change. Fallback uses the primary base URL/key unless independently configured.
+
+Caching remains **off by default**. The synthetic cache check temporarily set `CACHE_TTL_SECONDS=120`; enabling it stores response content in Redis for that TTL even when PostgreSQL raw-content persistence is disabled.
 
 ### Call the API
 
@@ -137,7 +151,9 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 See `deploy/k8s/README.md` for managed PostgreSQL/Redis prerequisites, generated Secrets, migration ordering, HPA limitations, ingress and network policy. These manifests require environment-specific image, hostname, identity, secret, and egress configuration; they are not a blind `kubectl apply` production promise.
 
-Prometheus scraping must authenticate as an administrator in this assessment. The optional monitoring profile expects a protected bearer-token file. Tokens expire: refresh them through `scripts/refresh_metrics_token.py --username metrics-reader --watch`, supervise that process, or introduce a narrow workload identity before production. Do not expose `/metrics` anonymously as a workaround. Example alerts need real alert routing/paging configuration.
+Prometheus scraping must authenticate as an administrator in this assessment. Token metrics expose `type="prompt_tokens"`, `type="completion_tokens"`, and `type="total_tokens"`. Use `sum(rate(aiqa_llm_tokens_total{type="total_tokens"}[5m]))` for aggregate provider consumption; **do not sum across all three types**, which would double-count components. The provider-reported total can include reasoning tokens absent from visible completion counts. Cache hits do not increment token consumption.
+
+The optional monitoring profile expects a protected bearer-token file. Tokens expire: refresh them through `scripts/refresh_metrics_token.py --username metrics-reader --watch`, supervise that process, or introduce a narrow workload identity before production. Do not expose `/metrics` anonymously as a workaround. Example alerts need real alert routing/paging configuration.
 
 ## Architecture questions
 

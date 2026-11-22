@@ -36,6 +36,73 @@ bearer = HTTPBearer(auto_error=False)
 DUMMY_HASH = hash_password(uuid.uuid4().hex)
 
 
+class _Readiness:
+    """One dependency probe per worker, with a caller-independent hard deadline.
+
+    asyncio.timeout/wait_for wait for cancellation cleanup; a DB driver may
+    shield that cleanup indefinitely. Never await that cleanup in an HTTP
+    request, and never spawn replacement probes while one is still draining.
+    """
+
+    def __init__(self, check, timeout=3.0):
+        self.check = check
+        self.timeout = timeout
+        self.task = None
+        self.deadline = 0.0
+        self.closed = False
+        self.cancelled_task = None
+
+    def _cancel_once(self, task):
+        # Track our own cancellation, not Task.cancelling(): driver cleanup may
+        # call uncancel() internally, but still must not receive a second one.
+        if not task.done() and self.cancelled_task is not task:
+            self.cancelled_task = task
+            task.cancel()
+
+    async def _run(self):
+        try:
+            await self.check()
+        except Exception as exc:
+            # Driver errors can contain credentials/SQL: record only the type.
+            logger.warning('readiness_failed error_type=%s', type(exc).__name__)
+            return False
+        return True
+
+    async def ready(self):
+        if self.closed:
+            return False
+        loop = asyncio.get_running_loop()
+        if self.task is None or self.task.done():
+            self.deadline = loop.time() + self.timeout
+            self.task = asyncio.create_task(self._run(), name='readiness-probe')
+            timer = loop.call_at(self.deadline, self._cancel_once, self.task)
+
+            def finished(task):
+                timer.cancel()
+                if not task.cancelled():
+                    task.exception()  # Retrieve failures even if all callers disconnect.
+
+            self.task.add_done_callback(finished)
+        task, deadline = self.task, self.deadline
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return False
+        # asyncio.wait does not cancel/await the child on timeout or when this
+        # caller disconnects. The independent timer cancels the probe once.
+        done, _ = await asyncio.wait([task], timeout=remaining)
+        return bool(done and loop.time() < deadline and not task.cancelled() and task.result())
+
+    async def close(self):
+        self.closed = True
+        if self.task is not None:
+            self._cancel_once(self.task)
+            _, pending = await asyncio.wait([self.task], timeout=self.timeout)
+            if pending:
+                # Python cannot force-stop cancellation-resistant coroutines.
+                # Retain the single tracked task until cleanup or process exit.
+                logger.warning('readiness_cleanup_pending')
+
+
 def create_app(settings: Settings | None = None, *, redis_client=None, provider_client=None) -> FastAPI:
     settings = settings or Settings()
     engine, sessions = database(settings)
@@ -53,12 +120,15 @@ def create_app(settings: Settings | None = None, *, redis_client=None, provider_
     @asynccontextmanager
     async def lifespan(application):
         # Migrations are an explicit release step, NEVER startup create_all.
-        yield
-        if provider_client is None:
-            await client.aclose()
-        if redis_client is None:
-            await redis.aclose()
-        await engine.dispose()
+        try:
+            yield
+        finally:
+            await readiness.close()
+            if provider_client is None:
+                await client.aclose()
+            if redis_client is None:
+                await redis.aclose()
+            await engine.dispose()
 
     application = FastAPI(title='AIQA Platform', version='1.0.0', lifespan=lifespan,
                           docs_url='/docs' if settings.app_env == 'development' else None,
@@ -164,16 +234,19 @@ def create_app(settings: Settings | None = None, *, redis_client=None, provider_
     async def live():
         return {'status':'alive'}
 
+    async def check_dependencies():
+        async with sessions() as session:
+            # Verify connectivity AND application schema, not just TCP/SELECT 1.
+            await session.execute(select(User.id).limit(1))
+            await session.execute(select(ChatRecord.id).limit(1))
+        await redis.ping()
+
+    readiness = _Readiness(check_dependencies)
+    application.state.readiness = readiness
+
     @application.get('/health')
     async def ready(request: Request):
-        try:
-            async with asyncio.timeout(3):
-                async with sessions() as session:
-                    # Verify both connectivity and application schema, not just TCP/SELECT 1.
-                    await session.execute(select(User.id).limit(1))
-                    await session.execute(select(ChatRecord.id).limit(1))
-                await redis.ping()
-        except (SQLAlchemyError, RedisError, OSError):
+        if not await readiness.ready():
             return failure(request, 503, 'Dependencies not ready')
         return {'status':'ready', 'database':'ok', 'redis':'ok'}
 
@@ -214,7 +287,8 @@ def create_app(settings: Settings | None = None, *, redis_client=None, provider_
             # Lease outlives the bounded provider deadline, including retry sleeps and cancellation.
             async with controls.lease(settings.llm_max_concurrency, settings.llm_total_timeout_seconds + 5):
                 result = await gateway.complete(body.question)
-            for kind in ('prompt_tokens','completion_tokens'):
+            # Preserve the provider's total: reasoning tokens need not appear in visible completions.
+            for kind in ('prompt_tokens','completion_tokens','total_tokens'):
                 metrics.tokens.labels(kind).inc(result['usage'][kind])
         elapsed = int((time.perf_counter() - start) * 1000)
         # Close DB sessions before network I/O; short writes avoid pinning a pool connection.
